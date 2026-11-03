@@ -6,11 +6,13 @@ import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.random.Random
 
 sealed class ApiTestResult {
     data class Connected(val latencyMs: Long, val message: String) : ApiTestResult()
@@ -30,10 +32,11 @@ class GeminiStoryService {
 
     // IMPORTANT: No HttpLoggingInterceptor is attached so API keys are NEVER logged to Logcat.
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(35, TimeUnit.SECONDS)
-        .writeTimeout(20, TimeUnit.SECONDS)
-        .build()
+    .connectTimeout(20, TimeUnit.SECONDS)
+    .readTimeout(35, TimeUnit.SECONDS)
+    .writeTimeout(20, TimeUnit.SECONDS)
+    .callTimeout(55, TimeUnit.SECONDS)
+    .build()
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
@@ -75,7 +78,7 @@ class GeminiStoryService {
             .build()
 
         try {
-            httpClient.newCall(request).execute().use { response ->
+            executeWithRetry(request).use { response ->
                 val elapsed = (System.currentTimeMillis() - startTime).coerceAtLeast(1L)
                 val bodyStr = response.body?.string().orEmpty()
 
@@ -100,20 +103,37 @@ class GeminiStoryService {
                         )
                     }
                     else -> {
-                        ApiTestResult.NetworkError(
-                            "Koneksi gagal dengan status HTTP ${response.code}. Coba lagi beberapa saat."
-                        )
+    val (errorStatus, errorMessage) = parseGeminiError(bodyStr)
+
+    val statusSuffix = if (errorStatus.isBlank()) {
+        ""
+    } else {
+        " • $errorStatus"
+    }
+
+    val detail = errorMessage.ifBlank {
+        "Server tidak memberikan rincian tambahan."
+    }
+
+    val userMessage = when (response.code) {
+        503 -> "Gemini sedang kelebihan beban atau tidak tersedia (HTTP 503$statusSuffix). $detail"
+        500, 502, 504 -> "Server Gemini mengalami gangguan sementara (HTTP ${response.code}$statusSuffix). $detail"
+        408 -> "Permintaan ke Gemini melewati batas waktu (HTTP 408). $detail"
+        else -> "Gemini API mengembalikan HTTP ${response.code}$statusSuffix. $detail"
+    }
+
+    ApiTestResult.NetworkError(userMessage.take(500))
                     }
                 }
             }
-        } catch (_: IOException) {
-            ApiTestResult.NetworkError(
-                "Gagal terhubung ke server Gemini API. Periksa koneksi internet perangkat Anda."
-            )
-        } catch (_: Exception) {
-            ApiTestResult.NetworkError(
-                "Terjadi kesalahan saat menguji koneksi Gemini API."
-            )
+        } catch (e: IOException) {
+    ApiTestResult.NetworkError(
+        "Koneksi ke Gemini gagal: ${e.javaClass.simpleName}. Periksa jaringan perangkat."
+    )
+} catch (e: Exception) {
+    ApiTestResult.NetworkError(
+        "Kesalahan saat menguji Gemini: ${e.javaClass.simpleName}. ${e.message.orEmpty()}".take(300)
+    )
         }
     }
 
@@ -155,7 +175,7 @@ class GeminiStoryService {
                     .post(payload.toString().toRequestBody(jsonMediaType))
                     .build()
 
-                httpClient.newCall(request).execute().use { response ->
+                executeWithRetry(request).use { response ->
                     if (response.isSuccessful) {
                         val bodyStr = response.body?.string().orEmpty()
                         val text = extractCandidateText(bodyStr).trim()
@@ -247,7 +267,7 @@ class GeminiStoryService {
                     put(
                         "generationConfig",
                         JSONObject().apply {
-                            put("temperature", 0.7)
+                            
                             put("responseMimeType", "application/json")
                         }
                     )
@@ -260,7 +280,7 @@ class GeminiStoryService {
                     .post(payload.toString().toRequestBody(jsonMediaType))
                     .build()
 
-                httpClient.newCall(request).execute().use { response ->
+                executeWithRetry(request).use { response ->
                     val bodyStr = response.body?.string().orEmpty()
                     if (response.isSuccessful) {
                         val candidateJson = extractCandidateText(bodyStr)
@@ -339,7 +359,79 @@ class GeminiStoryService {
             statusNotice = msg
         )
     }
+/**
+ * Retry untuk gangguan sementara pada Gemini API.
+ * HTTP 429 tidak diulang otomatis agar tidak memperburuk masalah kuota.
+ */
+private fun executeWithRetry(request: Request): Response {
+    val maxAttempts = 3
 
+    for (attempt in 0 until maxAttempts) {
+        try {
+            val response = httpClient.newCall(request).execute()
+
+            val retryable = response.code in setOf(
+                408, 500, 502, 503, 504
+            )
+
+            if (!retryable || attempt == maxAttempts - 1) {
+                return response
+            }
+
+            val retryAfter = response.header("Retry-After")
+                ?.toLongOrNull()
+                ?.coerceIn(1L, 10L)
+
+            response.close()
+
+            val backoff = 1000L * (1L shl attempt)
+            val delay = retryAfter?.times(1000L)
+                ?: (backoff + Random.nextLong(0L, 251L))
+
+            Thread.sleep(delay)
+
+        } catch (e: IOException) {
+            if (attempt == maxAttempts - 1) {
+                throw e
+            }
+
+            try {
+                Thread.sleep(
+                    1000L * (1L shl attempt) +
+                        Random.nextLong(0L, 251L)
+                )
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw IOException("Permintaan dibatalkan.", interrupted)
+            }
+
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw IOException("Permintaan dibatalkan.", interrupted)
+        }
+    }
+
+    throw IOException("Gemini gagal merespons setelah beberapa percobaan.")
+}
+
+/**
+ * Membaca informasi error dari respons resmi Gemini.
+ */
+private fun parseGeminiError(rawResponse: String): Pair<String, String> {
+    return try {
+        val error = JSONObject(rawResponse).optJSONObject("error")
+
+        val status = error?.optString("status").orEmpty()
+
+        val message = error?.optString("message").orEmpty()
+            .replace(Regex("\\s+"), " ")
+            .take(300)
+
+        status to message
+    } catch (_: Exception) {
+        "" to ""
+    }
+}
     private fun extractCandidateText(rawResponse: String): String {
         val root = JSONObject(rawResponse)
         val candidates = root.optJSONArray("candidates") ?: return ""
