@@ -1,0 +1,6 @@
+{
+  "name": "Motion Lab AI",
+  "description": "AI-powered 2D animation and motion graphics video studio with story generator, multi-track scene editor, real-time 9:16 preview, 1080x1920 MP4 export, and encrypted Gemini API Key Manager.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

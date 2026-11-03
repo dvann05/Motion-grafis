@@ -1,0 +1,20 @@
+<resources>
+    <string name="app_name">Motion Lab AI</string>
+    <string name="studio_subtitle">AI 2D Animation &amp; Motion Graphics Studio</string>
+    <string name="nav_studio">Studio</string>
+    <string name="nav_story_ai">AI Story</string>
+    <string name="nav_scenes">Scene Editor</string>
+    <string name="nav_audio">Audio &amp; Voice</string>
+    <string name="nav_export">Export MP4</string>
+    <string name="nav_settings">API &amp; Theme</string>
+    <string name="api_status_connected">Connected</string>
+    <string name="api_status_disconnected">Disconnected</string>
+    <string name="btn_generate_story">Generate Story &amp; Scenes with AI</string>
+    <string name="btn_generate_idea">Spark Story Idea (AI)</string>
+    <string name="btn_save_api_key">Save API Key</string>
+    <string name="btn_test_connection">Test Connection</string>
+    <string name="btn_delete_api_key">Delete API Key</string>
+    <string name="btn_export_mp4">Render &amp; Export MP4 (1080x1920 @ 30 FPS)</string>
+    <string name="btn_save_mp4_device">Download / Save MP4</string>
+    <string name="btn_share_mp4">Share Video</string>
+</resources>
