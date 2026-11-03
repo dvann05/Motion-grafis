@@ -556,6 +556,6 @@ class GeminiStoryService {
     }
 
     companion object {
-        private const val GEMINI_MODEL = "gemini-2.5-flash"
+        private const val GEMINI_MODEL = "gemini-3.8-flash"
     }
 }
